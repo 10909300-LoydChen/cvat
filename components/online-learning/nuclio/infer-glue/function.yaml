@@ -1,0 +1,50 @@
+metadata:
+  name: online-learning-detector
+  namespace: cvat
+  annotations:
+    name: Online learning detector (PyTriton)
+    type: detector
+    # Must list every label the PyTriton model may return.
+    # Redeploy this function after adding labels in CVAT; the model itself lives in PyTriton.
+    spec: |
+      [
+        { "id": 0, "name": "car", "type": "rectangle" },
+        { "id": 1, "name": "person", "type": "rectangle" },
+        { "id": 2, "name": "truck", "type": "rectangle" }
+      ]
+
+spec:
+  description: Thin glue between CVAT auto-annotation and the PyTriton DetInfer model
+  runtime: 'python:3.11'
+  handler: main:handler
+  eventTimeout: 30s
+  env:
+    - name: TRITON_URL
+      value: pytriton:8000
+  build:
+    image: cvat.online-learning.infer-glue
+    baseImage: python:3.11-slim
+
+    directives:
+      preCopy:
+        - kind: RUN
+          value: pip install --no-cache-dir "tritonclient[http]" numpy pillow
+        - kind: WORKDIR
+          value: /opt/nuclio
+
+  triggers:
+    myHttpTrigger:
+      numWorkers: 2
+      kind: 'http'
+      workerAvailabilityTimeoutMilliseconds: 10000
+      attributes:
+        maxRequestBodySize: 33554432 # 32MB
+
+  platform:
+    attributes:
+      # join the CVAT network so that the "pytriton" hostname resolves
+      network: cvat_cvat
+      restartPolicy:
+        name: always
+        maximumRetryCount: 3
+      mountMode: volume
