@@ -100,6 +100,9 @@
 }
 
 .cvat-objects-sidebar-labels-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     background: $objects-bar-tabs-color;
     padding: $grid-unit-size * 0.75 $grid-unit-size;
     border-bottom: 1px solid rgba(0, 0, 0, 8%);

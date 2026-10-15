@@ -29,6 +29,7 @@ import {
 } from 'utils/multi-selection';
 import { filterAnnotations } from 'utils/filter-annotations';
 import getHiddenZLayers from 'utils/get-hidden-z-layers';
+import LabelsEditorModal from './labels-editor-modal';
 
 const INTERACTIVE_ELEMENT_SELECTOR = 'a, button, input, textarea, [role="button"], .ant-select, .anticon';
 
@@ -228,6 +229,7 @@ function LabelsListComponent(): JSX.Element {
             <GlobalHotKeys keyMap={subKeyMap(componentShortcuts, keyMap)} handlers={handlers} />
             <div className='cvat-objects-sidebar-labels-list-header'>
                 <Text>{`Items: ${labels.length}`}</Text>
+                <LabelsEditorModal />
             </div>
             {labelIDs.map(
                 (labelID: number): JSX.Element => (
