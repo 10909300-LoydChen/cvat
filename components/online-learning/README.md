@@ -26,6 +26,7 @@ PyTriton (`triton/`) keeps two copies of the model in one process:
 |-------------|------------------------------------------------|--------------------|---------------------------------------------|
 | `DetTrain`  | `image` uint8 HxWx3, `boxes` xyxy, `labels`, `sample_id` | `accepted` | Upserts a training sample, returns immediately (0 if the content is unchanged) |
 | `DetForget` | `sample_ids`                                   | `removed`          | Drops samples of frames that no longer have boxes |
+| `DetConsolidate` | `reason`                                  | `scheduled`        | Requests a full round (0 if nothing changed since the last one) |
 | `DetInfer`  | `image` uint8 HxWx3                            | `detections` JSON  | Served by the last promoted model           |
 | `DetStatus` | `query`                                        | `status` JSON      | Version, labels, metrics, buffer size       |
 
@@ -40,8 +41,21 @@ training trigger:
 - A round starts once at least `MIN_NEW_SAMPLES` samples changed and no change arrived for
   `SETTLE_SECONDS`, i.e. one save results in one round. Saves made while a round runs are
   learned in the next round.
+- When a job reaches a state in `FULL_TRAIN_STATES` (default `completed`, e.g. "Finish the job"),
+  the trainer hook also requests a **full round**, which runs before any pending incremental round.
 
-Each round:
+There are two kinds of rounds:
+
+| | Incremental (every save) | Full (job finished) |
+|---|---|---|
+| Starts from | the training model of the previous round | the served (validated) model, discarding incremental drift |
+| Batches | half changed samples, half replay | epoch passes over the whole buffer |
+| Length | `EPOCHS_PER_ROUND`, at most `MAX_STEPS_PER_ROUND` steps | `FULL_EPOCHS`, at most `FULL_MAX_STEPS` steps |
+| Learning rate | constant | warmup + cosine decay |
+| Augmentation | horizontal flip | flip, brightness/contrast jitter, random zoom-out |
+| If rejected by the gate | counts towards `MAX_REJECTIONS` | discarded, incremental training continues |
+
+Both kinds go through the same steps:
 
 1. **Label growth**: unknown label names extend the detection head. Pretrained weights and the
    channels of already known classes are kept, only the new class channels start from scratch.
@@ -49,7 +63,7 @@ Each round:
    to limit catastrophic forgetting. Rounds run `EPOCHS_PER_ROUND` passes over the buffer, capped
    at `MAX_STEPS_PER_ROUND` steps.
 3. **Validation gate**: ~`VAL_FRACTION` of samples (chosen by a hash of `sample_id`, so the split is
-   stable) are never trained on. The candidate replaces the served model only if its F1@IoU0.5
+   stable) are never trained on. The candidate replaces the served model only if its mAP@IoU0.5
    on them is not worse than the current one. A rejected candidate keeps training in the next
    rounds; after `MAX_REJECTIONS` rejections in a row, training restarts from the served model.
 4. **Persistence**: promoted models are saved to `/models/v<N>.pt` and `/models/latest.pt`, samples to
@@ -93,7 +107,7 @@ the old ones instead of being learned twice.
    - Secret: the same value as `WEBHOOK_SECRET`
 
 4. Annotate and save. After the first training round the "Online learning detector (PyTriton)"
-   model in CVAT starts returning predictions.
+   model in CVAT starts returning predictions. Finish the job to run a full round.
 
 Training on every save also learns from frames that are still being annotated: objects that are
 not boxed yet are learned as background until the frame is saved again. To learn only from
@@ -111,6 +125,8 @@ pre-annotations.
 | `MIN_NEW_SAMPLES`  | 1       | Changed samples that trigger a round          |
 | `SETTLE_SECONDS`   | 3       | Quiet time after the last change before a round |
 | `MAX_REJECTIONS`   | 3       | Rejected rounds in a row before restarting from the served model |
+| `FULL_EPOCHS`      | 60      | Passes over the sample buffer in a full round |
+| `FULL_MAX_STEPS`   | 3000    | Upper bound of optimizer steps in a full round |
 | `VAL_FRACTION`     | 0.2     | Share of samples held out for the gate        |
 | `LR`, `BATCH_SIZE` | 0.001, 8 | AdamW learning rate, batch size              |
 

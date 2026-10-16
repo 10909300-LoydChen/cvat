@@ -6,14 +6,17 @@ Follows the pattern of pytriton/examples/online_learning_mnist, extended for det
 - a round starts once changes stop arriving for a short time (one CVAT save -> one round)
 - every batch mixes the changed samples with replayed older ones to limit forgetting,
   and the number of steps per round is capped so that rounds stay short
-- the inference model is replaced only if the validation F1 does not degrade; after several
+- the inference model is replaced only if the validation mAP50 does not degrade; after several
   rejected rounds in a row, training restarts from the served model to stop drifting
 - new label names grow the detection head (pretrained weights are transferred)
+
+Besides these incremental rounds, a full round can be requested (e.g. when a CVAT job is
+completed): it starts from the served model, passes over the whole buffer for more epochs with
+a cosine learning rate schedule and stronger augmentation, and also has to pass the gate.
 """
 
 import copy
 import hashlib
-import io
 import json
 import logging
 import math
@@ -29,7 +32,7 @@ from PIL import Image
 from ultralytics import YOLO
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.utils import DEFAULT_CFG
-from ultralytics.utils.metrics import box_iou
+from ultralytics.utils.metrics import ap_per_class, box_iou
 from ultralytics.utils.nms import non_max_suppression
 
 LOGGER = logging.getLogger(__name__)
@@ -93,6 +96,8 @@ class OnlineDetector(threading.Thread):
         lr: float,
         epochs_per_round: int,
         max_steps_per_round: int,
+        full_epochs: int,
+        full_max_steps: int,
         min_new_samples: int,
         settle_seconds: float,
         max_rejections: int,
@@ -105,6 +110,8 @@ class OnlineDetector(threading.Thread):
         self.lr = lr
         self.epochs_per_round = epochs_per_round
         self.max_steps_per_round = max_steps_per_round
+        self.full_epochs = full_epochs
+        self.full_max_steps = full_max_steps
         self.min_new_samples = min_new_samples
         self.settle_seconds = settle_seconds
         self.max_rejections = max_rejections
@@ -118,6 +125,8 @@ class OnlineDetector(threading.Thread):
         self.samples: dict[str, Sample] = {}
         self.digests: dict[str, str] = {}
         self.new_sample_ids: set[str] = set()  # added, changed or removed since the last round
+        self.unconsolidated_ids: set[str] = set()  # ... since the last full round
+        self.full_requested = False
         self.last_change = 0.0
         self.samples_lock = threading.Lock()
         self.wakeup = threading.Event()
@@ -164,6 +173,7 @@ class OnlineDetector(threading.Thread):
             self._publish()
             LOGGER.info("Restored model v%d with labels %s", self.version, self.labels)
 
+        self.unconsolidated_ids = set(self.new_sample_ids)
         LOGGER.info(
             "Restored %d samples (%d not learned yet)", len(self.samples), len(self.new_sample_ids)
         )
@@ -204,6 +214,7 @@ class OnlineDetector(threading.Thread):
             self.samples[sample_id] = sample
             self.digests[sample_id] = digest
             self.new_sample_ids.add(sample_id)
+            self.unconsolidated_ids.add(sample_id)
             self.last_change = time.monotonic()
         self._save_sample(sample_id, sample)
         self.wakeup.set()
@@ -216,6 +227,7 @@ class OnlineDetector(threading.Thread):
             for sid in removed:
                 del self.digests[sid]
                 self.new_sample_ids.add(sid)
+                self.unconsolidated_ids.add(sid)
             if removed:
                 self.last_change = time.monotonic()
         for sid in removed:
@@ -224,6 +236,15 @@ class OnlineDetector(threading.Thread):
         if removed:
             self.wakeup.set()
         return len(removed)
+
+    def request_full_round(self) -> bool:
+        """Schedule a full round if anything changed since the last one. Returns True if scheduled."""
+        with self.samples_lock:
+            if not self.unconsolidated_ids:
+                return False
+            self.full_requested = True
+        self.wakeup.set()
+        return True
 
     def infer(
         self, image: np.ndarray, conf: float = 0.05
@@ -246,6 +267,7 @@ class OnlineDetector(threading.Thread):
             "metrics": self.metrics,
             "samples": total,
             "pending_new_samples": pending,
+            "full_round_requested": self.full_requested,
             "training": self.training,
         }
 
@@ -257,15 +279,16 @@ class OnlineDetector(threading.Thread):
             self.wakeup.clear()
             with self.samples_lock:
                 # wait until a save has been fully received before starting the round
-                ready = (
-                    len(self.new_sample_ids) >= self.min_new_samples
-                    and time.monotonic() - self.last_change >= self.settle_seconds
-                )
+                settled = time.monotonic() - self.last_change >= self.settle_seconds
+                full = self.full_requested and settled
+                ready = full or (settled and len(self.new_sample_ids) >= self.min_new_samples)
             if ready and not self.stopped:
                 try:
-                    self._train_round()
+                    self._train_round(full)
                 except Exception:  # keep serving inference even if a round fails
                     LOGGER.exception("Training round failed")
+                finally:
+                    self.training = False
 
     def stop(self) -> None:
         self.stopped = True
@@ -289,12 +312,15 @@ class OnlineDetector(threading.Thread):
         self.train_model = build_model(previous, len(self.labels)).to(self.device)
         LOGGER.info("Detection head rebuilt for labels %s", self.labels)
 
-    def _train_round(self) -> None:
+    def _train_round(self, full: bool) -> None:
         self.training = True
         with self.samples_lock:
             samples = dict(self.samples)
-            changed_ids = set(self.new_sample_ids)
+            changed_ids = set(self.unconsolidated_ids if full else self.new_sample_ids)
             self.new_sample_ids.clear()
+            if full:
+                self.unconsolidated_ids.clear()
+                self.full_requested = False
 
         self._sync_labels(samples)
         train_ids = [sid for sid in samples if not self._is_val(sid)]
@@ -303,66 +329,105 @@ class OnlineDetector(threading.Thread):
             self.training = False
             return
 
-        fresh_ids = [sid for sid in train_ids if sid in changed_ids]
-        steps = min(
-            self.max_steps_per_round,
-            max(1, math.ceil(self.epochs_per_round * len(train_ids) / self.batch_size)),
-        )
+        with self.infer_lock:
+            current_model, current_labels = self.infer_model, self.infer_labels
+        kind = "full" if full else "incremental"
+        if full:
+            # start from the validated model rather than the incremental one, which may have drifted
+            model = (
+                build_model(current_model, len(self.labels)).to(self.device)
+                if current_model is not None
+                else copy.deepcopy(self.train_model)
+            )
+            epochs, max_steps = self.full_epochs, self.full_max_steps
+        else:
+            model = self.train_model
+            epochs, max_steps = self.epochs_per_round, self.max_steps_per_round
+        steps = min(max_steps, max(1, math.ceil(epochs * len(train_ids) / self.batch_size)))
         LOGGER.info(
-            "Training round: %d changed / %d train / %d val samples, %d steps",
+            "Training round (%s): %d changed / %d train / %d val samples, %d steps",
+            kind,
             len(changed_ids),
             len(train_ids),
             len(val_ids),
             steps,
         )
 
-        model = self.train_model
         model.train()
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=5e-4)
+        scheduler = None
+        if full:
+            warmup = max(1, steps // 20)
+            scheduler = torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                lambda step: min(1.0, (step + 1) / warmup)
+                * (0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * step / steps))),
+            )
+        fresh_ids = [sid for sid in train_ids if sid in changed_ids]
+        queue = []
         losses = []
         for _ in range(steps):
-            # half of every batch is reserved for changed samples, the rest replays the buffer
-            batch_ids = random.sample(fresh_ids, min(len(fresh_ids), self.batch_size // 2))
-            replay_ids = [sid for sid in train_ids if sid not in batch_ids]
-            batch_ids += random.sample(
-                replay_ids, min(len(replay_ids), self.batch_size - len(batch_ids))
-            )
-            batch = self._make_batch([samples[sid] for sid in batch_ids])
+            if full:
+                # epoch-style passes over the whole buffer
+                if len(queue) < self.batch_size:
+                    queue += random.sample(train_ids, len(train_ids))
+                batch_ids, queue = queue[: self.batch_size], queue[self.batch_size :]
+            else:
+                # half of every batch is reserved for changed samples, the rest replays the buffer
+                batch_ids = random.sample(fresh_ids, min(len(fresh_ids), self.batch_size // 2))
+                replay_ids = [sid for sid in train_ids if sid not in batch_ids]
+                batch_ids += random.sample(
+                    replay_ids, min(len(replay_ids), self.batch_size - len(batch_ids))
+                )
+            batch = self._make_batch([samples[sid] for sid in batch_ids], strong=full)
             loss, _ = model.loss(batch)
             optimizer.zero_grad()
             loss.sum().backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             optimizer.step()
+            if scheduler:
+                scheduler.step()
             losses.append(loss.sum().item())
 
         val_samples = [samples[sid] for sid in val_ids]
-        candidate_f1 = self._f1(model, self.labels, val_samples)
-        with self.infer_lock:
-            current_model, current_labels = self.infer_model, self.infer_labels
-        current_f1 = (
-            self._f1(current_model, current_labels, val_samples)
+        candidate_map = self._map50(model, self.labels, val_samples)
+        current_map = (
+            self._map50(current_model, current_labels, val_samples)
             if current_model is not None
             else -1.0
         )
 
         mean_loss = float(np.mean(losses)) if losses else 0.0
-        if candidate_f1 >= current_f1:
+        if candidate_map >= current_map:
             self.rejections = 0
+            self.train_model = model
             self.version += 1
             self.metrics = {
-                "val_f1": candidate_f1,
+                "round": kind,
+                "val_map50": candidate_map,
                 "train_loss": mean_loss,
                 "val_samples": len(val_samples),
             }
             self._save_checkpoint()
             self._publish()
             LOGGER.info(
-                "Promoted v%d: val F1 %.3f (previous %.3f)", self.version, candidate_f1, current_f1
+                "Promoted v%d (%s): val mAP50 %.3f (previous %.3f)",
+                self.version,
+                kind,
+                candidate_map,
+                current_map,
+            )
+        elif full:
+            # incremental training continues from its own model
+            LOGGER.info(
+                "Rejected full round: val mAP50 %.3f < current %.3f", candidate_map, current_map
             )
         else:
             # Keep serving the better model; keep training from the candidate unless it keeps losing
             self.rejections += 1
-            LOGGER.info("Rejected candidate: val F1 %.3f < current %.3f", candidate_f1, current_f1)
+            LOGGER.info(
+                "Rejected candidate: val mAP50 %.3f < current %.3f", candidate_map, current_map
+            )
             if self.rejections >= self.max_rejections:
                 self.train_model = build_model(current_model, len(self.labels)).to(self.device)
                 self.rejections = 0
@@ -376,7 +441,7 @@ class OnlineDetector(threading.Thread):
 
     # ---------- helpers ----------
 
-    def _make_batch(self, samples: list[Sample]) -> dict:
+    def _make_batch(self, samples: list[Sample], strong: bool = False) -> dict:
         images, cls, bboxes, batch_idx = [], [], [], []
         for idx, sample in enumerate(samples):
             image, scale, (pad_x, pad_y) = letterbox(sample.image, self.imgsz)
@@ -385,6 +450,21 @@ class OnlineDetector(threading.Thread):
                 image = image[:, ::-1].copy()
                 boxes = boxes.copy()
                 boxes[:, [0, 2]] = self.imgsz - boxes[:, [2, 0]]
+            if strong:
+                # photometric jitter, then zoom out to a random position (smaller objects)
+                gain, bias = random.uniform(0.75, 1.25), random.uniform(-20, 20)
+                image = np.clip(image.astype(np.float32) * gain + bias, 0, 255).astype(np.uint8)
+                size = round(self.imgsz * random.uniform(0.6, 1.0))
+                off_x = random.randint(0, self.imgsz - size)
+                off_y = random.randint(0, self.imgsz - size)
+                canvas = np.full_like(image, 114)
+                canvas[off_y : off_y + size, off_x : off_x + size] = np.asarray(
+                    Image.fromarray(image).resize((size, size), Image.BILINEAR)
+                )
+                image = canvas
+                boxes = boxes * (size / self.imgsz) + np.array(
+                    [off_x, off_y, off_x, off_y], dtype=np.float32
+                )
             images.append(image)
             for box, name in zip(boxes, sample.labels):
                 x1, y1, x2, y2 = np.clip(box, 0, self.imgsz) / self.imgsz
@@ -418,36 +498,35 @@ class OnlineDetector(threading.Thread):
             results.append(det)
         return results
 
-    def _f1(
-        self, model: DetectionModel, labels: list[str], samples: list[Sample], conf: float = 0.25
-    ) -> float:
-        """F1 at IoU 0.5 over the validation samples (class-aware)."""
+    def _map50(self, model: DetectionModel, labels: list[str], samples: list[Sample]) -> float:
+        """Mean AP at IoU 0.5 over the validation samples (classes present in the samples)."""
         if not samples:
             return 0.0
-        tp = fp = fn = 0
-        for sample, det in zip(samples, self._predict(model, [s.image for s in samples], conf)):
-            matched = set()
-            gt_boxes = torch.from_numpy(sample.boxes)
+        tp, conf, pred_cls, target_cls = [], [], [], []
+        for sample, det in zip(samples, self._predict(model, [s.image for s in samples], 0.001)):
+            target_cls += [self.labels.index(name) for name in sample.labels]
             ious = (
-                box_iou(torch.from_numpy(det[:, :4]), gt_boxes)
-                if len(det) and len(gt_boxes)
+                box_iou(torch.from_numpy(det[:, :4]), torch.from_numpy(sample.boxes)).numpy()
+                if len(det) and len(sample.labels)
                 else None
             )
-            for i, row in enumerate(det):
-                name = labels[int(row[5])]
-                best, best_j = 0.0, -1
-                for j, gt_name in enumerate(sample.labels):
-                    if (
-                        ious is not None
-                        and j not in matched
-                        and gt_name == name
-                        and ious[i, j] > best
-                    ):
-                        best, best_j = float(ious[i, j]), j
-                if best >= 0.5:
-                    tp += 1
-                    matched.add(best_j)
-                else:
-                    fp += 1
-            fn += len(sample.labels) - len(matched)
-        return 2 * tp / max(2 * tp + fp + fn, 1)
+            matched = set()
+            for i in np.argsort(-det[:, 4]):  # greedy matching, most confident first
+                name = labels[int(det[i, 5])]
+                candidates = [
+                    j
+                    for j, gt_name in enumerate(sample.labels)
+                    if gt_name == name and j not in matched and ious[i, j] >= 0.5
+                ]
+                best = max(candidates, key=lambda j: ious[i, j], default=None)
+                if best is not None:
+                    matched.add(best)
+                tp.append(best is not None)
+                conf.append(det[i, 4])
+                pred_cls.append(self.labels.index(name))
+        if not target_cls or not tp:
+            return 0.0
+        ap = ap_per_class(
+            np.array(tp)[:, None], np.array(conf), np.array(pred_cls), np.array(target_cls)
+        )[5]
+        return float(ap[:, 0].mean())

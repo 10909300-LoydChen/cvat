@@ -3,6 +3,7 @@
 Models:
 - DetTrain:  (image, boxes, labels, sample_id) -> accepted   (upserts a sample, training runs in background)
 - DetForget: sample_ids -> removed                           (drops samples whose annotations were deleted)
+- DetConsolidate: reason -> scheduled                        (requests a full round, e.g. on job completion)
 - DetInfer:  image -> detections (JSON)                      (always served by the last promoted model)
 - DetStatus: query -> status (JSON)                          (version, labels, metrics, buffer size)
 
@@ -38,6 +39,8 @@ def main():
         lr=float(os.environ.get("LR", "0.001")),
         epochs_per_round=int(os.environ.get("EPOCHS_PER_ROUND", "20")),
         max_steps_per_round=int(os.environ.get("MAX_STEPS_PER_ROUND", "200")),
+        full_epochs=int(os.environ.get("FULL_EPOCHS", "60")),
+        full_max_steps=int(os.environ.get("FULL_MAX_STEPS", "3000")),
         min_new_samples=int(os.environ.get("MIN_NEW_SAMPLES", "1")),
         settle_seconds=float(os.environ.get("SETTLE_SECONDS", "3")),
         max_rejections=int(os.environ.get("MAX_REJECTIONS", "3")),
@@ -69,6 +72,18 @@ def main():
             }
             for request in requests
         ]
+
+    def consolidate(requests):
+        responses = []
+        for request in requests:
+            scheduled = detector.request_full_round()
+            LOGGER.info(
+                "Full round %s (%s)",
+                "scheduled" if scheduled else "skipped, nothing changed",
+                request["reason"][0].decode(),
+            )
+            responses.append({"scheduled": np.array([int(scheduled)], dtype=np.int32)})
+        return responses
 
     def infer(requests):
         responses = []
@@ -110,6 +125,14 @@ def main():
                 infer_func=forget,
                 inputs=[Tensor(name="sample_ids", dtype=bytes, shape=(-1,))],
                 outputs=[Tensor(name="removed", dtype=np.int32, shape=(1,))],
+                config=ModelConfig(batching=False),
+                strict=True,
+            )
+            triton.bind(
+                model_name="DetConsolidate",
+                infer_func=consolidate,
+                inputs=[Tensor(name="reason", dtype=bytes, shape=(1,))],
+                outputs=[Tensor(name="scheduled", dtype=np.int32, shape=(1,))],
                 config=ModelConfig(batching=False),
                 strict=True,
             )

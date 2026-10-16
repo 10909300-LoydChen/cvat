@@ -23,6 +23,8 @@ spec:
       value: ''
     - name: TRIGGER_STATES
       value: ''
+    - name: FULL_TRAIN_STATES
+      value: completed
     - name: REQUIRED_STAGE
       value: ''
   build:

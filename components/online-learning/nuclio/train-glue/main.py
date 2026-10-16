@@ -15,6 +15,7 @@ def init_context(context):
     context.user_data.running = set()  # jobs being exported
     context.user_data.dirty = set()  # jobs saved again during their export
     context.user_data.sent = {}  # job id -> {frame: annotation digest}, skips unchanged frames
+    context.user_data.states = {}  # job id -> state from the latest webhook
 
 
 def handler(context, event):
@@ -44,6 +45,7 @@ def handler(context, event):
         return context.Response(body="ignored", status_code=200)
 
     with context.user_data.lock:
+        context.user_data.states[job["id"]] = job["state"]
         if job["id"] in context.user_data.running:
             # export again when the current one finishes, so the latest save is never lost
             context.user_data.dirty.add(job["id"])
@@ -135,6 +137,22 @@ def _send_job(context, job_id):
         for frame in set(sent) - set(boxes_per_frame):
             del sent[frame]
 
+        # finishing a job (by default) also asks for a full round over all collected samples
+        full_states = os.environ.get("FULL_TRAIN_STATES", "completed").split(",")
+        with context.user_data.lock:
+            state = context.user_data.states.get(job_id)
+        full = 0
+        if state in full_states:
+            reason = triton_http.InferInput("reason", [1], "BYTES")
+            reason.set_data_from_numpy(
+                np.asarray([f"job {job_id} {state}".encode()], dtype=np.object_)
+            )
+            full = int(triton.infer("DetConsolidate", inputs=[reason]).as_numpy("scheduled")[0])
+
         context.logger.info_with(
-            "Job sent to trainer", job_id=job_id, changed_frames=len(changed), removed=removed
+            "Job sent to trainer",
+            job_id=job_id,
+            changed_frames=len(changed),
+            removed=removed,
+            full_round=full,
         )
