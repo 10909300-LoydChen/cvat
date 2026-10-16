@@ -2,6 +2,7 @@
 
 Models:
 - DetTrain:  (image, boxes, labels, sample_id) -> accepted   (upserts a sample, training runs in background)
+- DetForget: sample_ids -> removed                           (drops samples whose annotations were deleted)
 - DetInfer:  image -> detections (JSON)                      (always served by the last promoted model)
 - DetStatus: query -> status (JSON)                          (version, labels, metrics, buffer size)
 
@@ -36,13 +37,17 @@ def main():
         batch_size=int(os.environ.get("BATCH_SIZE", "8")),
         lr=float(os.environ.get("LR", "0.001")),
         epochs_per_round=int(os.environ.get("EPOCHS_PER_ROUND", "20")),
-        min_new_samples=int(os.environ.get("MIN_NEW_SAMPLES", "8")),
+        max_steps_per_round=int(os.environ.get("MAX_STEPS_PER_ROUND", "200")),
+        min_new_samples=int(os.environ.get("MIN_NEW_SAMPLES", "1")),
+        settle_seconds=float(os.environ.get("SETTLE_SECONDS", "3")),
+        max_rejections=int(os.environ.get("MAX_REJECTIONS", "3")),
         val_fraction=float(os.environ.get("VAL_FRACTION", "0.2")),
     )
 
     def train(requests):
+        responses = []
         for request in requests:
-            detector.add_sample(
+            changed = detector.add_sample(
                 request["sample_id"][0].decode(),
                 Sample(
                     # inputs are views of PyTriton shared memory, reused after the call: keep a copy
@@ -51,7 +56,19 @@ def main():
                     labels=[name.decode() for name in request["labels"]],
                 ),
             )
-        return [{"accepted": np.array([1], dtype=np.int32)} for _ in requests]
+            responses.append({"accepted": np.array([int(changed)], dtype=np.int32)})
+        return responses
+
+    def forget(requests):
+        return [
+            {
+                "removed": np.array(
+                    [detector.remove_samples([sid.decode() for sid in request["sample_ids"]])],
+                    dtype=np.int32,
+                )
+            }
+            for request in requests
+        ]
 
     def infer(requests):
         responses = []
@@ -85,6 +102,14 @@ def main():
                     Tensor(name="sample_id", dtype=bytes, shape=(1,)),
                 ],
                 outputs=[Tensor(name="accepted", dtype=np.int32, shape=(1,))],
+                config=ModelConfig(batching=False),
+                strict=True,
+            )
+            triton.bind(
+                model_name="DetForget",
+                infer_func=forget,
+                inputs=[Tensor(name="sample_ids", dtype=bytes, shape=(-1,))],
+                outputs=[Tensor(name="removed", dtype=np.int32, shape=(1,))],
                 config=ModelConfig(batching=False),
                 strict=True,
             )

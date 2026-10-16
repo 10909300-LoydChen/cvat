@@ -1,9 +1,13 @@
 """Online learning YOLO detector: double-buffered train/infer models with a validation gate.
 
 Follows the pattern of pytriton/examples/online_learning_mnist, extended for detection:
-- samples are upserted by id (re-annotated frames replace older versions)
-- the whole sample buffer is replayed every round to limit catastrophic forgetting
-- the inference model is replaced only if the validation F1 does not degrade
+- samples are upserted by id (re-annotated frames replace older versions); unchanged
+  content is ignored, so repeated saves of the same annotations do not retrain
+- a round starts once changes stop arriving for a short time (one CVAT save -> one round)
+- every batch mixes the changed samples with replayed older ones to limit forgetting,
+  and the number of steps per round is capped so that rounds stay short
+- the inference model is replaced only if the validation F1 does not degrade; after several
+  rejected rounds in a row, training restarts from the served model to stop drifting
 - new label names grow the detection head (pretrained weights are transferred)
 """
 
@@ -12,8 +16,10 @@ import hashlib
 import io
 import json
 import logging
+import math
 import random
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +40,12 @@ class Sample:
     image: np.ndarray  # HxWx3 uint8
     boxes: np.ndarray  # Nx4 float32, xyxy in pixels
     labels: list[str]
+
+    def digest(self) -> str:
+        content = hashlib.sha1(self.image.tobytes())
+        content.update(self.boxes.astype(np.float32).tobytes())
+        content.update(json.dumps(self.labels).encode())
+        return content.hexdigest()
 
 
 def letterbox(image: np.ndarray, size: int) -> tuple[np.ndarray, float, tuple[int, int]]:
@@ -80,7 +92,10 @@ class OnlineDetector(threading.Thread):
         batch_size: int,
         lr: float,
         epochs_per_round: int,
+        max_steps_per_round: int,
         min_new_samples: int,
+        settle_seconds: float,
+        max_rejections: int,
         val_fraction: float,
     ):
         super().__init__(daemon=True)
@@ -89,7 +104,10 @@ class OnlineDetector(threading.Thread):
         self.batch_size = batch_size
         self.lr = lr
         self.epochs_per_round = epochs_per_round
+        self.max_steps_per_round = max_steps_per_round
         self.min_new_samples = min_new_samples
+        self.settle_seconds = settle_seconds
+        self.max_rejections = max_rejections
         self.val_fraction = val_fraction
 
         self.state_dir = state_dir
@@ -98,7 +116,9 @@ class OnlineDetector(threading.Thread):
 
         self.base = YOLO(base_weights).model
         self.samples: dict[str, Sample] = {}
-        self.new_sample_ids: set[str] = set()
+        self.digests: dict[str, str] = {}
+        self.new_sample_ids: set[str] = set()  # added, changed or removed since the last round
+        self.last_change = 0.0
         self.samples_lock = threading.Lock()
         self.wakeup = threading.Event()
         self.stopped = False
@@ -111,20 +131,28 @@ class OnlineDetector(threading.Thread):
         self.version = 0
         self.metrics: dict = {}
         self.training = False
+        self.rejections = 0
 
         self._restore()
 
     # ---------- persistence ----------
 
     def _restore(self) -> None:
+        checkpoint_path = self.state_dir / "latest.pt"
+        checkpoint_time = checkpoint_path.stat().st_mtime if checkpoint_path.exists() else 0.0
+
         for meta_path in sorted(self.samples_dir.glob("*.json")):
             meta = json.loads(meta_path.read_text())
             image = np.asarray(Image.open(meta_path.with_suffix(".png")).convert("RGB"))
-            self.samples[meta["id"]] = Sample(
+            sample = Sample(
                 image, np.asarray(meta["boxes"], dtype=np.float32).reshape(-1, 4), meta["labels"]
             )
+            self.samples[meta["id"]] = sample
+            self.digests[meta["id"]] = sample.digest()
+            # samples received after the last promoted model were not learned yet
+            if meta_path.stat().st_mtime > checkpoint_time:
+                self.new_sample_ids.add(meta["id"])
 
-        checkpoint_path = self.state_dir / "latest.pt"
         if checkpoint_path.exists():
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
             self.labels = list(checkpoint["labels"])
@@ -136,12 +164,16 @@ class OnlineDetector(threading.Thread):
             self._publish()
             LOGGER.info("Restored model v%d with labels %s", self.version, self.labels)
 
-        LOGGER.info("Restored %d samples", len(self.samples))
+        LOGGER.info(
+            "Restored %d samples (%d not learned yet)", len(self.samples), len(self.new_sample_ids)
+        )
+
+    def _sample_path(self, sample_id: str, suffix: str) -> Path:
+        return self.samples_dir / (hashlib.sha1(sample_id.encode()).hexdigest() + suffix)
 
     def _save_sample(self, sample_id: str, sample: Sample) -> None:
-        stem = hashlib.sha1(sample_id.encode()).hexdigest()
-        Image.fromarray(sample.image).save(self.samples_dir / f"{stem}.png")
-        (self.samples_dir / f"{stem}.json").write_text(
+        Image.fromarray(sample.image).save(self._sample_path(sample_id, ".png"))
+        self._sample_path(sample_id, ".json").write_text(
             json.dumps(
                 {
                     "id": sample_id,
@@ -163,12 +195,35 @@ class OnlineDetector(threading.Thread):
 
     # ---------- triton entry points ----------
 
-    def add_sample(self, sample_id: str, sample: Sample) -> None:
+    def add_sample(self, sample_id: str, sample: Sample) -> bool:
+        """Upsert a sample. Returns False if the same content is already known."""
+        digest = sample.digest()
         with self.samples_lock:
+            if self.digests.get(sample_id) == digest:
+                return False
             self.samples[sample_id] = sample
+            self.digests[sample_id] = digest
             self.new_sample_ids.add(sample_id)
+            self.last_change = time.monotonic()
         self._save_sample(sample_id, sample)
         self.wakeup.set()
+        return True
+
+    def remove_samples(self, sample_ids: list[str]) -> int:
+        """Forget samples whose frames no longer have annotations. Returns the number removed."""
+        with self.samples_lock:
+            removed = [sid for sid in sample_ids if self.samples.pop(sid, None) is not None]
+            for sid in removed:
+                del self.digests[sid]
+                self.new_sample_ids.add(sid)
+            if removed:
+                self.last_change = time.monotonic()
+        for sid in removed:
+            self._sample_path(sid, ".png").unlink(missing_ok=True)
+            self._sample_path(sid, ".json").unlink(missing_ok=True)
+        if removed:
+            self.wakeup.set()
+        return len(removed)
 
     def infer(
         self, image: np.ndarray, conf: float = 0.05
@@ -198,10 +253,14 @@ class OnlineDetector(threading.Thread):
 
     def run(self) -> None:
         while not self.stopped:
-            self.wakeup.wait(timeout=5)
+            self.wakeup.wait(timeout=1)
             self.wakeup.clear()
             with self.samples_lock:
-                ready = len(self.new_sample_ids) >= self.min_new_samples
+                # wait until a save has been fully received before starting the round
+                ready = (
+                    len(self.new_sample_ids) >= self.min_new_samples
+                    and time.monotonic() - self.last_change >= self.settle_seconds
+                )
             if ready and not self.stopped:
                 try:
                     self._train_round()
@@ -234,32 +293,47 @@ class OnlineDetector(threading.Thread):
         self.training = True
         with self.samples_lock:
             samples = dict(self.samples)
+            changed_ids = set(self.new_sample_ids)
             self.new_sample_ids.clear()
 
         self._sync_labels(samples)
-        if not self.labels:
-            self.training = False
-            return
         train_ids = [sid for sid in samples if not self._is_val(sid)]
         val_ids = [sid for sid in samples if self._is_val(sid)]
-        LOGGER.info("Training round: %d train / %d val samples", len(train_ids), len(val_ids))
+        if not self.labels or not train_ids:
+            self.training = False
+            return
+
+        fresh_ids = [sid for sid in train_ids if sid in changed_ids]
+        steps = min(
+            self.max_steps_per_round,
+            max(1, math.ceil(self.epochs_per_round * len(train_ids) / self.batch_size)),
+        )
+        LOGGER.info(
+            "Training round: %d changed / %d train / %d val samples, %d steps",
+            len(changed_ids),
+            len(train_ids),
+            len(val_ids),
+            steps,
+        )
 
         model = self.train_model
         model.train()
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=5e-4)
         losses = []
-        for _ in range(self.epochs_per_round):
-            random.shuffle(train_ids)
-            for start in range(0, len(train_ids), self.batch_size):
-                batch = self._make_batch(
-                    [samples[sid] for sid in train_ids[start : start + self.batch_size]]
-                )
-                loss, _ = model.loss(batch)
-                optimizer.zero_grad()
-                loss.sum().backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-                optimizer.step()
-                losses.append(loss.sum().item())
+        for _ in range(steps):
+            # half of every batch is reserved for changed samples, the rest replays the buffer
+            batch_ids = random.sample(fresh_ids, min(len(fresh_ids), self.batch_size // 2))
+            replay_ids = [sid for sid in train_ids if sid not in batch_ids]
+            batch_ids += random.sample(
+                replay_ids, min(len(replay_ids), self.batch_size - len(batch_ids))
+            )
+            batch = self._make_batch([samples[sid] for sid in batch_ids])
+            loss, _ = model.loss(batch)
+            optimizer.zero_grad()
+            loss.sum().backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+            optimizer.step()
+            losses.append(loss.sum().item())
 
         val_samples = [samples[sid] for sid in val_ids]
         candidate_f1 = self._f1(model, self.labels, val_samples)
@@ -273,6 +347,7 @@ class OnlineDetector(threading.Thread):
 
         mean_loss = float(np.mean(losses)) if losses else 0.0
         if candidate_f1 >= current_f1:
+            self.rejections = 0
             self.version += 1
             self.metrics = {
                 "val_f1": candidate_f1,
@@ -285,8 +360,13 @@ class OnlineDetector(threading.Thread):
                 "Promoted v%d: val F1 %.3f (previous %.3f)", self.version, candidate_f1, current_f1
             )
         else:
-            # Keep training from the candidate but keep serving the better model
+            # Keep serving the better model; keep training from the candidate unless it keeps losing
+            self.rejections += 1
             LOGGER.info("Rejected candidate: val F1 %.3f < current %.3f", candidate_f1, current_f1)
+            if self.rejections >= self.max_rejections:
+                self.train_model = build_model(current_model, len(self.labels)).to(self.device)
+                self.rejections = 0
+                LOGGER.info("Training restarted from the served model v%d", self.version)
         self.training = False
 
     def _publish(self) -> None:

@@ -6,7 +6,7 @@ metadata:
     # Not a CVAT model: this function is a webhook target, so it has no "type" annotation
 
 spec:
-  description: Receives CVAT job webhooks and pushes completed job annotations to the PyTriton DetTrain model
+  description: Receives CVAT job webhooks (sent on every annotation save) and pushes changed frames to PyTriton
   runtime: 'python:3.11'
   handler: main:handler
   eventTimeout: 30s
@@ -20,6 +20,8 @@ spec:
     - name: CVAT_PASSWORD
       value: ''
     - name: WEBHOOK_SECRET
+      value: ''
+    - name: TRIGGER_STATES
       value: ''
     - name: REQUIRED_STAGE
       value: ''
