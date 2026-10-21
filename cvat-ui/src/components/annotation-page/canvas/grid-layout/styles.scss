@@ -120,3 +120,87 @@
         }
     }
 }
+
+.cvat-annotated-objects-strip {
+    background: $background-color-1;
+    border-top: 1px solid $border-color-1;
+
+    .cvat-annotated-objects-strip-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: $grid-unit-size * 3.5;
+        padding: 0 $grid-unit-size;
+    }
+
+    .cvat-annotated-objects-strip-toggle {
+        border: none;
+        background: none;
+        cursor: pointer;
+        color: $text-color-secondary;
+    }
+
+    .cvat-annotated-objects-strip-items {
+        display: flex;
+        align-items: stretch;
+        gap: $grid-unit-size;
+        height: $grid-unit-size * 27;
+        padding: 0 $grid-unit-size $grid-unit-size;
+        overflow: auto hidden;
+
+        > .ant-typography {
+            align-self: center;
+        }
+    }
+}
+
+.cvat-annotated-object-card {
+    display: flex;
+    flex: 0 0 auto;
+    width: $grid-unit-size * 40;
+    border: 2px solid;
+    border-radius: 4px;
+    overflow: hidden;
+
+    &.cvat-annotated-object-card-active {
+        box-shadow: 0 0 0 2px $notification-border-color-1;
+    }
+
+    .cvat-annotated-object-thumbnail {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: center;
+        width: $grid-unit-size * 15;
+        padding: 0;
+        border: none;
+        background: $border-color-1;
+        cursor: pointer;
+    }
+
+    .cvat-annotated-object-card-details {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    .cvat-annotated-object-card-header {
+        display: flex;
+        align-items: center;
+        gap: $grid-unit-size * 0.5;
+        padding: $grid-unit-size * 0.5;
+
+        .ant-select {
+            flex: 1;
+            min-width: 0;
+        }
+    }
+
+    .cvat-annotated-object-card-attributes {
+        flex: 1;
+        min-height: 0;
+        padding: 0 $grid-unit-size * 0.5 $grid-unit-size * 0.5;
+        overflow: hidden auto;
+    }
+}
