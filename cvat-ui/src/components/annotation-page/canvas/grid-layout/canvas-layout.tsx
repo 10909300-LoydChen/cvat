@@ -33,7 +33,7 @@ import CanvasWrapper3DComponent, {
     FrontViewComponent,
 } from 'components/annotation-page/canvas/views/canvas3d/canvas-wrapper3D';
 import ContextImage from 'components/annotation-page/canvas/views/context-image/context-image';
-import AnnotatedObjectsStrip from 'components/annotation-page/canvas/annotated-objects-strip';
+import FrameFilmstrip from 'components/annotation-page/canvas/frame-filmstrip';
 import CVATTooltip from 'components/common/cvat-tooltip';
 import { useUpdateEffect } from 'utils/hooks';
 import { shallowEqual } from 'utils/redux';
@@ -159,7 +159,7 @@ function CanvasLayout({ type }: { type?: DimensionType }): JSX.Element {
         const container = window.document.getElementsByClassName('cvat-annotation-header')[0];
         let containerHeight = window.innerHeight;
         if (container) {
-            const strip = window.document.getElementsByClassName('cvat-annotated-objects-strip')[0];
+            const strip = window.document.getElementsByClassName('cvat-frame-filmstrip')[0];
             containerHeight = window.innerHeight - container.getBoundingClientRect().bottom -
                 (strip ? strip.getBoundingClientRect().height : 0);
             // https://github.com/react-grid-layout/react-grid-layout/issues/628#issuecomment-1228453084
@@ -373,7 +373,7 @@ function CanvasLayout({ type }: { type?: DimensionType }): JSX.Element {
                 </ReactGridLayout>
             )}
             { type === DimensionType.DIMENSION_3D && <CanvasWrapper3DComponent /> }
-            { type === DimensionType.DIMENSION_2D && <AnnotatedObjectsStrip /> }
+            { type === DimensionType.DIMENSION_2D && <FrameFilmstrip /> }
         </Layout.Content>
     );
 }

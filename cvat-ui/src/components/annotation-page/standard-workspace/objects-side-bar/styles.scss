@@ -1041,3 +1041,61 @@
     font-size: 10px;
     margin: 0;
 }
+
+.cvat-object-attributes-list {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+
+    .cvat-object-attributes-list-header {
+        padding: $grid-unit-size * 0.75 $grid-unit-size;
+        border-bottom: 1px solid rgba(0, 0, 0, 8%);
+    }
+
+    .cvat-object-attributes-list-items {
+        display: flex;
+        flex-direction: column;
+        gap: $grid-unit-size;
+        padding: $grid-unit-size;
+        overflow: hidden auto;
+    }
+}
+
+.cvat-annotated-object-card {
+    flex: 0 0 auto; // keep the full card height, the list scrolls instead
+    border: 2px solid;
+    border-radius: 4px;
+    overflow: hidden;
+    background: $background-color-1;
+
+    &.cvat-annotated-object-card-active {
+        box-shadow: 0 0 0 2px $notification-border-color-1;
+    }
+
+    .cvat-annotated-object-thumbnail {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        padding: $grid-unit-size * 0.5 0;
+        border: none;
+        background: $border-color-1;
+        cursor: pointer;
+    }
+
+    .cvat-annotated-object-card-header {
+        display: flex;
+        align-items: center;
+        gap: $grid-unit-size * 0.5;
+        padding: $grid-unit-size * 0.5;
+
+        .ant-select {
+            flex: 1;
+            min-width: 0;
+        }
+    }
+
+    .cvat-annotated-object-card-attributes {
+        padding: 0 $grid-unit-size * 0.5 $grid-unit-size * 0.5;
+    }
+}

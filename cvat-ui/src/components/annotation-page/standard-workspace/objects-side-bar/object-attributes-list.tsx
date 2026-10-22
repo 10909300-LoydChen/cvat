@@ -5,7 +5,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import Text from 'antd/lib/typography/Text';
-import { DownOutlined, UpOutlined } from '@ant-design/icons';
 
 import {
     Label, ObjectState, ObjectType, ShapeType,
@@ -15,10 +14,10 @@ import { shallowEqual, ThunkDispatch } from 'utils/redux';
 import { activateObject, updateAnnotationsAsync } from 'actions/annotation-actions';
 import { filterApplicableLabels } from 'utils/filter-applicable-labels';
 import LabelSelector from 'components/label-selector/label-selector';
-import ItemAttribute from 'components/annotation-page/standard-workspace/objects-side-bar/object-item-attribute';
+import ItemAttribute from './object-item-attribute';
 
-const THUMBNAIL_MAX_WIDTH = 112;
-const THUMBNAIL_MAX_HEIGHT = 184;
+const THUMBNAIL_MAX_WIDTH = 288;
+const THUMBNAIL_MAX_HEIGHT = 96;
 const CONTEXT_PADDING = 4; // frame pixels around the object
 
 interface FrameImage {
@@ -155,7 +154,7 @@ function AnnotatedObjectCard(props: CardProps): JSX.Element {
     );
 }
 
-function AnnotatedObjectsStrip(): JSX.Element {
+function ObjectAttributesList(): JSX.Element {
     const {
         states, frameData, labels, activatedStateID,
     } = useSelector((state: CombinedState) => ({
@@ -165,7 +164,6 @@ function AnnotatedObjectsStrip(): JSX.Element {
         activatedStateID: state.annotation.annotations.activatedStateID,
     }), shallowEqual);
     const [image, setImage] = useState<FrameImage | null>(null);
-    const [collapsed, setCollapsed] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -183,11 +181,6 @@ function AnnotatedObjectsStrip(): JSX.Element {
         return () => { cancelled = true; };
     }, [frameData]);
 
-    useEffect(() => {
-        // the canvas layout subtracts the strip height when it computes its own size
-        window.dispatchEvent(new Event('resize'));
-    }, [collapsed]);
-
     const objects = states
         .filter((objectState: ObjectState) => (
             [ObjectType.SHAPE, ObjectType.TRACK].includes(objectState.objectType) &&
@@ -197,34 +190,24 @@ function AnnotatedObjectsStrip(): JSX.Element {
         .filter((item): item is { objectState: ObjectState; box: Box } => item.box !== null);
 
     return (
-        <div className='cvat-annotated-objects-strip'>
-            <div className='cvat-annotated-objects-strip-header'>
-                <Text strong>{`Annotated objects: ${objects.length}`}</Text>
-                <button
-                    type='button'
-                    className='cvat-annotated-objects-strip-toggle'
-                    aria-label={collapsed ? 'Show annotated objects' : 'Hide annotated objects'}
-                    onClick={() => setCollapsed(!collapsed)}
-                >
-                    {collapsed ? <UpOutlined /> : <DownOutlined />}
-                </button>
+        <div className='cvat-object-attributes-list'>
+            <div className='cvat-object-attributes-list-header'>
+                <Text strong>{`Objects on this frame: ${objects.length}`}</Text>
             </div>
-            {!collapsed && (
-                <div className='cvat-annotated-objects-strip-items'>
-                    {objects.length ? objects.map(({ objectState, box }) => (
-                        <AnnotatedObjectCard
-                            key={objectState.clientID}
-                            objectState={objectState}
-                            box={box}
-                            image={image}
-                            labels={labels}
-                            active={objectState.clientID === activatedStateID}
-                        />
-                    )) : <Text type='secondary'>No annotated objects on this frame</Text>}
-                </div>
-            )}
+            <div className='cvat-object-attributes-list-items'>
+                {objects.length ? objects.map(({ objectState, box }) => (
+                    <AnnotatedObjectCard
+                        key={objectState.clientID}
+                        objectState={objectState}
+                        box={box}
+                        image={image}
+                        labels={labels}
+                        active={objectState.clientID === activatedStateID}
+                    />
+                )) : <Text type='secondary'>No annotated objects on this frame</Text>}
+            </div>
         </div>
     );
 }
 
-export default React.memo(AnnotatedObjectsStrip);
+export default React.memo(ObjectAttributesList);
