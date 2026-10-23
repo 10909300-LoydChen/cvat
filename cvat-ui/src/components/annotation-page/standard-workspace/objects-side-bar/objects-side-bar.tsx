@@ -16,6 +16,7 @@ import { CombinedState } from 'reducers';
 import { ThunkDispatch } from 'utils/redux';
 import { DimensionType } from 'cvat-core-wrapper';
 import LabelsList from 'components/annotation-page/standard-workspace/objects-side-bar/labels-list';
+import ObjectAttributesList from 'components/annotation-page/standard-workspace/objects-side-bar/object-attributes-list';
 import { collapseSidebar as collapseSidebarAction } from 'actions/annotation-actions';
 import AppearanceBlock from 'components/annotation-page/appearance-block';
 import IssuesListComponent from 'components/annotation-page/standard-workspace/objects-side-bar/issues-list';
@@ -129,7 +130,11 @@ function ObjectsSideBar(props: StateToProps & DispatchToProps & OwnProps): JSX.E
                     key: 'objects',
                     label: 'Objects',
                     children: objectsList,
-                }, {
+                }, ...(is2D ? [{
+                    key: 'attributes',
+                    label: 'Attributes',
+                    children: <ObjectAttributesList />,
+                }] : []), {
                     key: 'labels',
                     label: 'Labels',
                     forceRender: true,
