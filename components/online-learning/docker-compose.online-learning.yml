@@ -1,0 +1,42 @@
+services:
+  pytriton:
+    container_name: pytriton
+    image: cvat/online-learning-pytriton:dev
+    build:
+      context: ./components/online-learning/triton
+    restart: always
+    shm_size: 2gb # PyTriton passes tensors through shared memory
+    environment:
+      IMGSZ: ${ONLINE_LEARNING_IMGSZ:-640}
+      EPOCHS_PER_ROUND: ${ONLINE_LEARNING_EPOCHS_PER_ROUND:-20}
+      MIN_NEW_SAMPLES: ${ONLINE_LEARNING_MIN_NEW_SAMPLES:-1}
+      MAX_STEPS_PER_ROUND: ${ONLINE_LEARNING_MAX_STEPS_PER_ROUND:-200}
+      FULL_EPOCHS: ${ONLINE_LEARNING_FULL_EPOCHS:-60}
+      FULL_MAX_STEPS: ${ONLINE_LEARNING_FULL_MAX_STEPS:-3000}
+      SETTLE_SECONDS: ${ONLINE_LEARNING_SETTLE_SECONDS:-3}
+      VAL_FRACTION: ${ONLINE_LEARNING_VAL_FRACTION:-0.2}
+    volumes:
+      - online_learning_models:/models
+    networks:
+      - cvat
+    # Uncomment to train and infer on a GPU (requires the NVIDIA Container Toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Webhooks go through smokescreen, which blocks private addresses by default.
+  # Allow the docker network range so CVAT can reach the Nuclio trainer hook:
+  # cvat_worker_webhooks delivers events, cvat_server sends the "ping" from the UI.
+  cvat_worker_webhooks:
+    environment: &online-learning-smokescreen
+      SMOKESCREEN_OPTS: ${ONLINE_LEARNING_SMOKESCREEN_OPTS:---allow-range=172.16.0.0/12}
+
+  cvat_server:
+    environment: *online-learning-smokescreen
+
+volumes:
+  online_learning_models:

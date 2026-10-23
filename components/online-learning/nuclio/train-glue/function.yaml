@@ -1,0 +1,56 @@
+metadata:
+  name: online-learning-trainer-hook
+  namespace: cvat
+  annotations:
+    name: Online learning trainer hook
+    # Not a CVAT model: this function is a webhook target, so it has no "type" annotation
+
+spec:
+  description: Receives CVAT job webhooks (sent on every annotation save) and pushes changed frames to PyTriton
+  runtime: 'python:3.11'
+  handler: main:handler
+  eventTimeout: 30s
+  env:
+    - name: TRITON_URL
+      value: pytriton:8000
+    - name: CVAT_URL
+      value: http://cvat_server:8080
+    - name: CVAT_USERNAME
+      value: ''
+    - name: CVAT_PASSWORD
+      value: ''
+    - name: WEBHOOK_SECRET
+      value: ''
+    - name: TRIGGER_STATES
+      value: ''
+    - name: FULL_TRAIN_STATES
+      value: completed
+    - name: REQUIRED_STAGE
+      value: ''
+  build:
+    image: cvat.online-learning.train-glue
+    baseImage: python:3.11-slim
+
+    directives:
+      preCopy:
+        - kind: RUN
+          value: pip install --no-cache-dir "tritonclient[http]" cvat-sdk numpy pillow
+        - kind: WORKDIR
+          value: /opt/nuclio
+
+  triggers:
+    myHttpTrigger:
+      numWorkers: 1
+      kind: 'http'
+      workerAvailabilityTimeoutMilliseconds: 10000
+      attributes:
+        port: 32001
+        maxRequestBodySize: 33554432 # 32MB
+
+  platform:
+    attributes:
+      network: cvat_cvat
+      restartPolicy:
+        name: always
+        maximumRetryCount: 3
+      mountMode: volume
