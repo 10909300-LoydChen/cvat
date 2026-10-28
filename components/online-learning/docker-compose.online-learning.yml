@@ -28,6 +28,24 @@ services:
     #           count: 1
     #           capabilities: [gpu]
 
+  # Browser-facing API of the model service, served on the CVAT host under /al/
+  al_controller:
+    container_name: al_controller
+    image: cvat/online-learning-controller:dev
+    build:
+      context: ./components/online-learning/controller
+    restart: always
+    environment:
+      CVAT_URL: http://cvat_server:8080
+      TRITON_URL: pytriton:8000
+    labels:
+      traefik.enable: "true"
+      traefik.http.services.cvat-al.loadbalancer.server.port: "8000"
+      traefik.http.routers.cvat-al.rule: Host(`${CVAT_HOST:-localhost}`) && PathPrefix(`/al/`)
+      traefik.http.routers.cvat-al.entrypoints: web
+    networks:
+      - cvat
+
   # Webhooks go through smokescreen, which blocks private addresses by default.
   # Allow the docker network range so CVAT can reach the Nuclio trainer hook:
   # cvat_worker_webhooks delivers events, cvat_server sends the "ping" from the UI.

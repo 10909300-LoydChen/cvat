@@ -177,6 +177,15 @@
         background: rgba(0, 0, 0, 55%);
     }
 
+    .cvat-frame-filmstrip-score {
+        inset: 0 0 auto auto;
+        background: #fa8c16;
+    }
+
+    .cvat-frame-filmstrip-score-annotated {
+        background: #52c41a;
+    }
+
     &.cvat-frame-filmstrip-item-current {
         border-color: $notification-border-color-1;
     }

@@ -20,6 +20,7 @@ import { Workspace } from 'reducers';
 
 import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from 'rehype-sanitize';
+import ActiveLearningControl from './active-learning-control';
 
 interface Props {
     showStatistics(): void;
@@ -141,6 +142,7 @@ function RightGroup(props: Props): JSX.Element {
                 <InfoCircleOutlined />
                 Info
             </Button>
+            <ActiveLearningControl />
             <Button
                 type='link'
                 className={`cvat-annotation-header-filters-button cvat-annotation-header-button ${filters ?
