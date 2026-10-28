@@ -127,6 +127,8 @@ class OnlineDetector(threading.Thread):
         self.new_sample_ids: set[str] = set()  # added, changed or removed since the last round
         self.unconsolidated_ids: set[str] = set()  # ... since the last full round
         self.full_requested = False
+        self.forced_full = False  # explicitly requested by a user, runs even if paused
+        self.paused = False  # automatic rounds wait, samples are still collected
         self.last_change = 0.0
         self.samples_lock = threading.Lock()
         self.wakeup = threading.Event()
@@ -237,14 +239,22 @@ class OnlineDetector(threading.Thread):
             self.wakeup.set()
         return len(removed)
 
-    def request_full_round(self) -> bool:
-        """Schedule a full round if anything changed since the last one. Returns True if scheduled."""
+    def request_full_round(self, force: bool = False) -> bool:
+        """Schedule a full round if anything changed since the last one (or if forced).
+
+        Returns True if scheduled.
+        """
         with self.samples_lock:
-            if not self.unconsolidated_ids:
+            if not self.unconsolidated_ids and not force:
                 return False
             self.full_requested = True
+            self.forced_full = self.forced_full or force
         self.wakeup.set()
         return True
+
+    def set_paused(self, paused: bool) -> None:
+        self.paused = paused
+        self.wakeup.set()
 
     def infer(
         self, image: np.ndarray, conf: float = 0.05
@@ -268,6 +278,7 @@ class OnlineDetector(threading.Thread):
             "samples": total,
             "pending_new_samples": pending,
             "full_round_requested": self.full_requested,
+            "paused": self.paused,
             "training": self.training,
         }
 
@@ -280,8 +291,10 @@ class OnlineDetector(threading.Thread):
             with self.samples_lock:
                 # wait until a save has been fully received before starting the round
                 settled = time.monotonic() - self.last_change >= self.settle_seconds
-                full = self.full_requested and settled
-                ready = full or (settled and len(self.new_sample_ids) >= self.min_new_samples)
+                full = self.forced_full or (self.full_requested and settled and not self.paused)
+                ready = full or (
+                    not self.paused and settled and len(self.new_sample_ids) >= self.min_new_samples
+                )
             if ready and not self.stopped:
                 try:
                     self._train_round(full)
@@ -321,6 +334,7 @@ class OnlineDetector(threading.Thread):
             if full:
                 self.unconsolidated_ids.clear()
                 self.full_requested = False
+                self.forced_full = False
 
         self._sync_labels(samples)
         train_ids = [sid for sid in samples if not self._is_val(sid)]

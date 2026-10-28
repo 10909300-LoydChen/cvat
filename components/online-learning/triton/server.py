@@ -4,6 +4,7 @@ Models:
 - DetTrain:  (image, boxes, labels, sample_id) -> accepted   (upserts a sample, training runs in background)
 - DetForget: sample_ids -> removed                           (drops samples whose annotations were deleted)
 - DetConsolidate: reason -> scheduled                        (requests a full round, e.g. on job completion)
+- DetControl: command -> status (JSON)                       (pause, resume, train: user actions from the UI)
 - DetInfer:  image -> detections (JSON)                      (always served by the last promoted model)
 - DetStatus: query -> status (JSON)                          (version, labels, metrics, buffer size)
 
@@ -85,6 +86,21 @@ def main():
             responses.append({"scheduled": np.array([int(scheduled)], dtype=np.int32)})
         return responses
 
+    def control(requests):
+        responses = []
+        for request in requests:
+            command = request["command"][0].decode()
+            if command in ("pause", "resume"):
+                detector.set_paused(command == "pause")
+            elif command == "train":
+                detector.request_full_round(force=True)
+            else:
+                raise ValueError(f"Unknown command: {command}")
+            LOGGER.info("Control command: %s", command)
+            payload = json.dumps(detector.status()).encode()
+            responses.append({"status": np.array([payload], dtype=np.object_)})
+        return responses
+
     def infer(requests):
         responses = []
         for request in requests:
@@ -133,6 +149,14 @@ def main():
                 infer_func=consolidate,
                 inputs=[Tensor(name="reason", dtype=bytes, shape=(1,))],
                 outputs=[Tensor(name="scheduled", dtype=np.int32, shape=(1,))],
+                config=ModelConfig(batching=False),
+                strict=True,
+            )
+            triton.bind(
+                model_name="DetControl",
+                infer_func=control,
+                inputs=[Tensor(name="command", dtype=bytes, shape=(1,))],
+                outputs=[Tensor(name="status", dtype=bytes, shape=(1,))],
                 config=ModelConfig(batching=False),
                 strict=True,
             )

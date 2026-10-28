@@ -11,6 +11,7 @@ import { getCore } from 'cvat-core-wrapper';
 import { CombinedState } from 'reducers';
 import { shallowEqual, ThunkDispatch } from 'utils/redux';
 import { changeFrameAsync } from 'actions/annotation-actions';
+import { FrameScore, useJobScores } from 'utils/active-learning';
 
 const core = getCore();
 
@@ -28,6 +29,10 @@ function FrameFilmstrip(): JSX.Element | null {
     }), shallowEqual);
     const [collapsed, setCollapsed] = useState(false);
     const itemsRef = useRef<HTMLDivElement>(null);
+    const scores = useJobScores(job?.id);
+    const scoreByFrame = Object.fromEntries(
+        (scores?.frames ?? []).map((item: FrameScore) => [item.frame, item]),
+    ) as Record<number, FrameScore>;
 
     useEffect(() => {
         // the canvas layout subtracts the filmstrip height when it computes its own size
@@ -85,6 +90,17 @@ function FrameFilmstrip(): JSX.Element | null {
                         >
                             <img src={frameURL(frame)} loading='lazy' alt={`Frame ${frame}`} />
                             <span>{frame}</span>
+                            {scoreByFrame[frame] && (
+                                <span
+                                    className={[
+                                        'cvat-frame-filmstrip-score',
+                                        scoreByFrame[frame].annotated ? 'cvat-frame-filmstrip-score-annotated' : '',
+                                    ].join(' ')}
+                                    title='Active learning score: how unsure the model is about this frame'
+                                >
+                                    {scoreByFrame[frame].annotated ? '✓' : Math.round(scoreByFrame[frame].score * 100)}
+                                </span>
+                            )}
                         </button>
                     ))}
                 </div>

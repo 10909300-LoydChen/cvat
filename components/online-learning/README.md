@@ -73,6 +73,24 @@ Both kinds go through the same steps:
 Samples are keyed by `task<id>-frame<n>`: when a frame is re-annotated, the new annotations replace
 the old ones instead of being learned twice.
 
+## Model panel and active learning
+
+The **Model** button in the annotation header opens a panel for the model service:
+
+- model state, version, validation mAP50, number of samples and labels (refreshed every 3 seconds)
+- **Pause / Resume automatic training**: pauses rounds started by saves; samples are still collected
+- **Train now (full round)**: runs a full round immediately, also while paused (it still has to pass the
+  validation gate, so the version may stay the same)
+- **Score frames**: runs the served model on every frame of the job. A frame's score is the mean
+  ambiguity (`1 - |2 * confidence - 1|`) of its 3 most ambiguous detections, so frames the model is least
+  sure about come first. Scores are shown in the panel and as badges in the frame strip (✓ marks frames
+  that were annotated when scored). **Next suggested frame** jumps to the highest-scored frame that is not
+  annotated.
+
+The panel talks to `al_controller` (`controller/`), served on the CVAT host under `/al/` by traefik. It
+authorizes every request by forwarding the user's CVAT cookies to CVAT, so users can only score jobs they
+can open, and it rejects cross-origin POST requests.
+
 ## Deployment
 
 1. Start CVAT with serverless support and the PyTriton service:
@@ -84,6 +102,9 @@ the old ones instead of being learned twice.
      -f components/online-learning/docker-compose.online-learning.yml \
      up -d --build
    ```
+
+   This also starts `al_controller` (the Model panel API). With `docker-compose.https.yml`, add the
+   `websecure` entrypoint to its traefik router as for the other CVAT services.
 
    For GPU training, uncomment the `deploy` section of `pytriton` in
    `docker-compose.online-learning.yml`.
@@ -142,3 +163,6 @@ pre-annotations.
 - CVAT webhooks have a 10s timeout, so the trainer hook answers `202` and exports the job in background.
   A failed export is only logged; the next save of the job sends the changes again.
 - Each save downloads the annotations of the whole job; frames are downloaded only when changed.
+- Active learning scores are uncertainty only: frames where the model misses objects completely score
+  low. Mix in frames in order or at random, especially while the model is young. Scoring runs on one
+  thread and downloads every frame of the job; any logged-in user can pause or train the shared model.
