@@ -213,6 +213,7 @@ export interface ExportState {
     jobs: {
         dataset: {
             modalInstance: Job | null;
+            frames: number[] | null; // export only these frames
         };
     };
     instanceType: 'project' | 'task' | 'job' | null;

@@ -966,12 +966,14 @@ class JobAnnotation:
         *,
         host: str = "",
         temp_dir: str | None = None,
+        included_frames: list[int] | None = None,
         **options,
     ):
         job_data = JobData(
             annotation_ir=self.ir_data,
             db_job=self.db_job,
             host=host,
+            included_frames=included_frames,
         )
 
         with (
@@ -1320,6 +1322,7 @@ def export_job(
     server_url: str | None = None,
     save_images=False,
     temp_dir: str | None = None,
+    included_frames: list[int] | None = None,
 ):
     from cvat.apps.dataset_manager.formats.registry import make_exporter
 
@@ -1328,7 +1331,14 @@ def export_job(
 
     exporter = make_exporter(format_name)
     with open(dst_file, "wb") as f:
-        job.export(f, exporter, host=server_url, save_images=save_images, temp_dir=temp_dir)
+        job.export(
+            f,
+            exporter,
+            host=server_url,
+            save_images=save_images,
+            temp_dir=temp_dir,
+            included_frames=included_frames,
+        )
 
 
 @silk_profile(name="GET task data")

@@ -29,8 +29,9 @@ export enum ExportActionTypes {
 const core = getCore();
 
 export const exportActions = {
-    openExportDatasetModal: (instance: ProjectOrTaskOrJob) => (
-        createAction(ExportActionTypes.OPEN_EXPORT_DATASET_MODAL, { instance })
+    // frames: export only these frames of a job
+    openExportDatasetModal: (instance: ProjectOrTaskOrJob, frames?: number[]) => (
+        createAction(ExportActionTypes.OPEN_EXPORT_DATASET_MODAL, { instance, frames })
     ),
     closeExportDatasetModal: (instance: ProjectOrTaskOrJob) => (
         createAction(ExportActionTypes.CLOSE_EXPORT_DATASET_MODAL, { instance })
@@ -89,13 +90,17 @@ export const exportDatasetAsync = (
     useDefaultSettings: boolean,
     targetStorage: Storage,
     name?: string,
+    frames?: number[],
 ): ThunkAction => async (dispatch) => {
     const resource = saveImages ? 'dataset' : 'annotations';
     const instanceType = getInstanceType(instance);
 
     try {
-        const rqID = await instance.annotations
-            .exportDataset(format, saveImages, useDefaultSettings, targetStorage, name);
+        const rqID = await (instance instanceof Job ?
+            instance.annotations
+                .exportDataset(format, saveImages, useDefaultSettings, targetStorage, name, frames) :
+            instance.annotations
+                .exportDataset(format, saveImages, useDefaultSettings, targetStorage, name));
 
         if (rqID) {
             const result = await core.requests.listen(rqID, {

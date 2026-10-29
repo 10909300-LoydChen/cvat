@@ -48,6 +48,7 @@ type Params = {
     action?: string,
     save_images?: boolean,
     import_mode?: 'replace' | 'append',
+    frames?: string,
 };
 
 type HealthCheckResponse = Record<string, string>;
@@ -1032,6 +1033,18 @@ async function updateLabel(id: number, body: SerializedLabel): Promise<Serialize
     return response.data;
 }
 
+// [0, 1, 2, 5, 7, 8] -> "0-2,5,7-8"
+function framesToRanges(frames: number[]): string {
+    const sorted = [...new Set(frames)].sort((a, b) => a - b);
+    const ranges: string[] = [];
+    for (let i = 0; i < sorted.length; i++) {
+        const start = sorted[i];
+        while (sorted[i + 1] === sorted[i] + 1) i++;
+        ranges.push(start === sorted[i] ? `${start}` : `${start}-${sorted[i]}`);
+    }
+    return ranges.join(',');
+}
+
 function exportDataset(instanceType: 'projects' | 'jobs' | 'tasks') {
     return async function (
         id: number,
@@ -1040,6 +1053,7 @@ function exportDataset(instanceType: 'projects' | 'jobs' | 'tasks') {
         useDefaultSettings: boolean,
         targetStorage: Storage,
         name?: string,
+        frames?: number[],
     ) {
         const { backendAPI } = config;
         const baseURL = `${backendAPI}/${instanceType}/${id}/dataset/export`;
@@ -1047,6 +1061,7 @@ function exportDataset(instanceType: 'projects' | 'jobs' | 'tasks') {
             ...enableOrganization(),
             ...configureStorage(targetStorage, useDefaultSettings),
             ...(name ? { filename: name } : {}),
+            ...(frames ? { frames: framesToRanges(frames) } : {}),
             format,
             save_images: saveImages,
         };

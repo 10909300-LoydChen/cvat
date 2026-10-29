@@ -624,8 +624,11 @@ export function implementJob(Job: typeof JobClass): typeof JobClass {
             useDefaultSettings: Parameters<typeof JobClass.prototype.annotations.exportDataset>[2],
             targetStorage: Parameters<typeof JobClass.prototype.annotations.exportDataset>[3],
             customName?: Parameters<typeof JobClass.prototype.annotations.exportDataset>[4],
+            frames?: Parameters<typeof JobClass.prototype.annotations.exportDataset>[5],
         ): ReturnType<typeof JobClass.prototype.annotations.exportDataset> {
-            const rqID = await exportDataset(this, format, saveImages, useDefaultSettings, targetStorage, customName);
+            const rqID = await exportDataset(
+                this, format, saveImages, useDefaultSettings, targetStorage, customName, frames,
+            );
             return rqID;
         },
     });

@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: MIT
 
+import hashlib
 import inspect
 import os
 import os.path as osp
@@ -326,6 +327,7 @@ class ExportCacheManager:
         instance_timestamp: float,
         save_images: bool,
         format_name: str,
+        frames_digest: str | None = None,
     ) -> str:
         from .formats.registry import EXPORT_FORMATS
 
@@ -335,6 +337,9 @@ class ExportCacheManager:
         file_type = ExportFileType.DATASET if save_images else ExportFileType.ANNOTATIONS
 
         normalized_format_name = make_file_name(to_snake_case(format_name))
+        if frames_digest:
+            # parse_filename() drops everything after the timestamp for datasets
+            normalized_format_name += cls.SPLITTER + "frames_" + frames_digest
         filename = cls.FILE_NAME_TEMPLATE_WITH_INSTANCE.format(
             instance_type=instance_type,
             instance_id=instance_id,
@@ -435,6 +440,10 @@ class ExportCacheManager:
             raise CacheFileOrDirPathParseError(f"Couldn't parse file name: {basename!r}") from ex
 
         return parsed_file_name
+
+
+def make_frames_digest(frames: Iterable[int]) -> str:
+    return hashlib.sha1(",".join(map(str, sorted(set(frames)))).encode()).hexdigest()[:16]
 
 
 def extend_export_file_lifetime(file_path: str):

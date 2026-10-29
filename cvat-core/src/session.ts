@@ -256,6 +256,7 @@ function buildDuplicatedAPI(prototype): void {
                     useDefaultSettings: boolean,
                     targetStorage: Storage,
                     customName?: string,
+                    frames?: number[],
                 ) {
                     const result = await PluginRegistry.apiWrapper.call(
                         this,
@@ -265,6 +266,7 @@ function buildDuplicatedAPI(prototype): void {
                         useDefaultSettings,
                         targetStorage,
                         customName,
+                        frames,
                     );
                     return result;
                 },
@@ -503,6 +505,7 @@ export class Session {
             useDefaultSettings: boolean,
             targetStorage: Storage,
             name?: string,
+            frames?: number[], // jobs only: export just these frames
         ) => Promise<string | void>;
     };
 
