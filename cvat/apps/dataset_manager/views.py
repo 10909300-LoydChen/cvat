@@ -24,6 +24,7 @@ from .util import (
     current_function_name,
     extend_export_file_lifetime,
     get_export_cache_lock,
+    make_frames_digest,
 )
 
 slogger = ServerLogManager(__name__)
@@ -76,7 +77,11 @@ def export(
     job_id: int | None = None,
     server_url: str | None = None,
     save_images: bool = False,
+    included_frames: list[int] | None = None,
 ):
+    if included_frames is not None and job_id is None:
+        raise ValueError("Frame selection is supported only for jobs")
+
     if task_id is not None:
         logger = slogger.task[task_id]
         export_fn = task.export_task
@@ -110,6 +115,7 @@ def export(
         instance_timestamp=instance_update_time.timestamp(),
         save_images=save_images,
         format_name=dst_format,
+        frames_digest=make_frames_digest(included_frames) if included_frames is not None else None,
     )
 
     # acquire a lock 2 times instead of using one long lock:
@@ -138,6 +144,7 @@ def export(
             server_url=server_url,
             save_images=save_images,
             temp_dir=temp_subdir,
+            **({"included_frames": included_frames} if included_frames is not None else {}),
         )
 
         with get_export_cache_lock(
@@ -156,12 +163,36 @@ def export(
     return output_path
 
 
-def export_job_annotations(job_id: int, dst_format: str, *, server_url: str | None = None):
-    return export(dst_format=dst_format, job_id=job_id, server_url=server_url, save_images=False)
+def export_job_annotations(
+    job_id: int,
+    dst_format: str,
+    *,
+    server_url: str | None = None,
+    included_frames: list[int] | None = None,
+):
+    return export(
+        dst_format=dst_format,
+        job_id=job_id,
+        server_url=server_url,
+        save_images=False,
+        included_frames=included_frames,
+    )
 
 
-def export_job_as_dataset(job_id: int, dst_format: str, *, server_url: str | None = None):
-    return export(dst_format=dst_format, job_id=job_id, server_url=server_url, save_images=True)
+def export_job_as_dataset(
+    job_id: int,
+    dst_format: str,
+    *,
+    server_url: str | None = None,
+    included_frames: list[int] | None = None,
+):
+    return export(
+        dst_format=dst_format,
+        job_id=job_id,
+        server_url=server_url,
+        save_images=True,
+        included_frames=included_frames,
+    )
 
 
 def export_task_as_dataset(task_id: int, dst_format: str, *, server_url: str | None = None):

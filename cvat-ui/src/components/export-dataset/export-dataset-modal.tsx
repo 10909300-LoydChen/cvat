@@ -70,7 +70,7 @@ function appendExportExtension(name: string, extension: string): string {
 }
 
 function ExportDatasetModal(props: Readonly<StateToProps>): JSX.Element {
-    const { dumpers, instance } = props;
+    const { dumpers, instance, frames } = props;
 
     const [instanceType, setInstanceType] = useState('');
     const [useDefaultTargetStorage, setUseDefaultTargetStorage] = useState(true);
@@ -115,7 +115,7 @@ function ExportDatasetModal(props: Readonly<StateToProps>): JSX.Element {
         };
     }, shallowEqual);
 
-    const isBulkMode = selectedIds.length > 1;
+    const isBulkMode = !frames && selectedIds.length > 1;
     const [selectedInstances, setSelectedInstances] = useState<ProjectOrTaskOrJob[]>([]);
     useEffect(() => {
         if (isBulkMode) {
@@ -246,11 +246,13 @@ function ExportDatasetModal(props: Readonly<StateToProps>): JSX.Element {
                         cloudStorageId: defaultStorageCloudId,
                     }) : new Storage(targetStorage),
                     values.customName ? appendExportExtension(values.customName, exportExtension) : undefined,
+                    frames ?? undefined,
                 ),
             );
             closeModal();
             const resource = values.saveImages ? 'Dataset' : 'Annotations';
-            const description = `${resource} export was started for ${instanceType}. ` +
+            const subject = frames ? `${frames.length} selected frames of the ${instanceType}` : instanceType;
+            const description = `${resource} export was started for ${subject}. ` +
             'You can check progress and download the file [here](/requests).';
             Notification.info({
                 message: `${resource} export started`,
@@ -271,6 +273,7 @@ function ExportDatasetModal(props: Readonly<StateToProps>): JSX.Element {
             selectedInstances,
             nameTemplate,
             dumpers,
+            frames,
         ],
     );
 
@@ -297,7 +300,11 @@ function ExportDatasetModal(props: Readonly<StateToProps>): JSX.Element {
                         {`Export ${selectedInstances.length} ${instanceType}s as datasets`}
                     </Text>
                 ) : (
-                    <Text strong>{`Export ${instanceType} as a dataset`}</Text>
+                    <Text strong>
+                        {frames ?
+                            `Export ${frames.length} selected frames of the ${instanceType} as a dataset` :
+                            `Export ${instanceType} as a dataset`}
+                    </Text>
                 )
             }
             open={!!instance}
@@ -410,6 +417,7 @@ function ExportDatasetModal(props: Readonly<StateToProps>): JSX.Element {
 interface StateToProps {
     dumpers: Dumper[];
     instance: Project | Task | Job | null;
+    frames: number[] | null;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
@@ -420,6 +428,7 @@ function mapStateToProps(state: CombinedState): StateToProps {
 
     return {
         instance,
+        frames: instanceType === 'job' ? state.export.jobs.dataset.frames : null,
         dumpers: state.formats.annotationFormats?.dumpers ?? [],
     };
 }

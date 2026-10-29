@@ -318,6 +318,16 @@ class DatasetMixin:
                 required=False,
                 default=False,
             ),
+            OpenApiParameter(
+                "frames",
+                description=(
+                    "Export only these frames, as frame numbers and ranges (e.g. 0,3,5-9). "
+                    "Supported only for jobs"
+                ),
+                location=OpenApiParameter.QUERY,
+                type=OpenApiTypes.STR,
+                required=False,
+            ),
         ],
         request=OpenApiTypes.NONE,
         responses={

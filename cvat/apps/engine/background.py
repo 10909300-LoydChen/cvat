@@ -26,7 +26,11 @@ from rq import Retry
 from rq.job import JobStatus as RQJobStatus
 
 import cvat.apps.dataset_manager as dm
-from cvat.apps.dataset_manager.util import TmpDirManager, get_export_cache_lock
+from cvat.apps.dataset_manager.util import (
+    TmpDirManager,
+    get_export_cache_lock,
+    make_frames_digest,
+)
 from cvat.apps.dataset_manager.views import get_export_callback
 from cvat.apps.engine.backup import (
     ProjectExporter,
@@ -276,16 +280,45 @@ class DatasetExporter(BaseResourceExporter):
     class ExportArgs(BaseResourceExporter.ExportArgs):
         format: str
         save_images: bool
+        frames: list[int] | None = None
+
+    def _parse_frames(self, value: str) -> list[int]:
+        # "0,3,5-9" -> [0, 3, 5, 6, 7, 8, 9]
+        if not isinstance(self.db_instance, Job):
+            raise serializers.ValidationError("The 'frames' parameter is supported only for jobs")
+
+        segment = self.db_instance.segment
+        frames = set()
+        for item in filter(None, value.split(",")):
+            start, _, stop = item.partition("-")
+            try:
+                start, stop = int(start), int(stop or start)
+            except ValueError as ex:
+                raise serializers.ValidationError(
+                    "The 'frames' parameter must be a list of frame numbers and ranges, e.g. 0,3,5-9"
+                ) from ex
+            # check the bounds before expanding the range
+            if start < segment.start_frame or stop > segment.stop_frame:
+                raise serializers.ValidationError(
+                    f"Frames must be in the job range [{segment.start_frame}, {segment.stop_frame}]"
+                )
+            frames.update(range(start, stop + 1))
+
+        if not frames:
+            raise serializers.ValidationError("The 'frames' parameter must not be empty")
+        return sorted(frames)
 
     def init_request_args(self) -> None:
         super().init_request_args()
         save_images = is_dataset_export(self.request)
         format_name = self.request.query_params.get("format", "")
+        frames = self.request.query_params.get("frames")
 
         self.export_args: DatasetExporter.ExportArgs = self.ExportArgs(
             **self.export_args.to_dict(),
             format=format_name,
             save_images=save_images,
+            frames=self._parse_frames(frames) if frames is not None else None,
         )
 
     def validate_request(self):
@@ -311,6 +344,11 @@ class DatasetExporter(BaseResourceExporter):
                 else RequestSubresource.ANNOTATIONS
             ),
             format=self.export_args.format,
+            frames=(
+                make_frames_digest(self.export_args.frames)
+                if self.export_args.frames is not None
+                else None
+            ),
         ).render()
 
     def validate_request_id(self, request_id, /) -> None:
@@ -339,6 +377,8 @@ class DatasetExporter(BaseResourceExporter):
         self.callback_kwargs = {
             "server_url": self.request.build_absolute_uri("").rstrip("/"),
         }
+        if self.export_args.frames is not None:
+            self.callback_kwargs["included_frames"] = self.export_args.frames
 
     def finalize_request(self):
         handle_dataset_export(
@@ -359,7 +399,11 @@ class DatasetExporter(BaseResourceExporter):
                 class_name=self.target,
                 identifier=self.db_instance.pk,
                 timestamp=timestamp,
-                format_name=self.export_args.format,
+                format_name=(
+                    self.export_args.format
+                    if self.export_args.frames is None
+                    else f"{self.export_args.format}_{len(self.export_args.frames)}_frames"
+                ),
                 is_annotation_file=not self.export_args.save_images,
                 extension=(EXPORT_FORMATS[self.export_args.format].EXT).lower(),
             )

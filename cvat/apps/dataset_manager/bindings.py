@@ -552,6 +552,7 @@ class CommonData(InstanceLabelData):
                 self._export_tracked_shape(shape)
                 for shape in tracked_shapes
                 if not self._is_frame_deleted(shape["frame"])
+                and self._is_frame_required(shape["frame"])
             ],
             elements=[
                 self._export_track(element, i)
@@ -660,7 +661,9 @@ class CommonData(InstanceLabelData):
     @property
     def shapes(self):
         for shape in self._annotation_ir.shapes:
-            if not self._is_frame_deleted(shape["frame"]):
+            if not self._is_frame_deleted(shape["frame"]) and self._is_frame_required(
+                shape["frame"]
+            ):
                 yield self._export_labeled_shape(shape)
 
     def get_included_frames(self):
@@ -691,7 +694,7 @@ class CommonData(InstanceLabelData):
     @property
     def tags(self):
         for tag in self._annotation_ir.tags:
-            if tag["frame"] not in self._deleted_frames:
+            if tag["frame"] not in self._deleted_frames and self._is_frame_required(tag["frame"]):
                 yield self._export_tag(tag)
 
     def iterate_intervals(self) -> Generator[LabeledInterval, None, None]:

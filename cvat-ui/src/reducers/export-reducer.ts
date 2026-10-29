@@ -28,6 +28,7 @@ const defaultState: ExportState = {
     jobs: {
         dataset: {
             modalInstance: null,
+            frames: null,
         },
     },
     instanceType: null,
@@ -36,7 +37,7 @@ const defaultState: ExportState = {
 export default (state: ExportState = defaultState, action: ExportActions): ExportState => {
     switch (action.type) {
         case ExportActionTypes.OPEN_EXPORT_DATASET_MODAL: {
-            const { instance } = action.payload;
+            const { instance, frames } = action.payload;
             const activitiesField = defineActititiesField(instance);
 
             return {
@@ -46,6 +47,7 @@ export default (state: ExportState = defaultState, action: ExportActions): Expor
                     dataset: {
                         ...state[activitiesField].dataset,
                         modalInstance: instance,
+                        ...(activitiesField === 'jobs' ? { frames: frames ?? null } : {}),
                     },
                 },
                 instanceType: activitiesField

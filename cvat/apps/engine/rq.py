@@ -402,10 +402,19 @@ class RequestIdWithOptionalLightweight(RequestId):
 
 
 @attrs.frozen(kw_only=True, slots=False)
+class RequestIdWithOptionalFrames(RequestId):
+    # digest of the exported frame selection, so different selections are different requests
+    frames: str | None = attrs.field(
+        validator=attrs.validators.instance_of((str, NoneType)), default=None
+    )
+
+
+@attrs.frozen(kw_only=True, slots=False)
 class ExportRequestId(
     RequestIdWithOptionalSubresource,  # subresource is optional because export queue works also with events
     RequestIdWithOptionalFormat,
     RequestIdWithOptionalLightweight,
+    RequestIdWithOptionalFrames,
 ):
     ACTION_DEFAULT_VALUE: ClassVar[str] = "export"
     ACTION_ALLOWED_VALUES: ClassVar[tuple[str]] = (ACTION_DEFAULT_VALUE,)
